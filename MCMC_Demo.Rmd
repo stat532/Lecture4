@@ -1,0 +1,245 @@
+---
+title: "MCMC DEMO"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(knitr)
+library(ggplot2)
+library(gridExtra)
+```
+
+
+# MCMC DEMO
+
+
+#### 1. Exact Posterior
+
+We will soon see learn about JAGS for fitting Bayesian models, but these algorithms can also be written directly in R code.
+
+This will be demonstrated using a dataset that determines if birds (the willow tit) are observed in a spatial grid square. The MCMC results will be compared with the analytical solution. In most cases, analytical solutions for the posterior are not possible and MCMC is typically used to make inferences from the posterior.
+
+
+```{r, fig.align= 'center', fig.width=5}
+# set prior parameters for beta distribution
+a.prior <- 1
+b.prior <- 1
+
+# read in data
+birds <- read.csv('http://www.math.montana.edu/ahoegh/teaching/stat491/data/willowtit2013.csv')
+y <- birds$birds
+N <- nrow(birds) # count number of trials
+z <- sum(birds$birds)
+```
+The true posterior distribution is beta(`r z + a.prior`, `r N - z + b.prior`).
+
+#### 2. Metropolis Sampler for Beta Prior and Bernoulli likelihood
+
+
+```{r, fig.align= 'center', fig.width=5}
+# set prior parameters for beta distribution
+a.prior <- 1
+b.prior <- 1
+
+# read in data
+birds <- read.csv('http://www.math.montana.edu/ahoegh/teaching/stat491/data/willowtit2013.csv')
+y <- birds$birds
+N <- nrow(birds) # count number of trials
+z <- sum(birds$birds)
+
+# initialize algorithm
+num.sims <- 10000
+sigma.propose <- .1 # standard deviation of normal random walk proposal distribution
+theta.accept <- rep(0, num.sims)
+theta.current <- rep(1, num.sims)
+theta.propose <- rep(1, num.sims)
+
+for (i in 2:num.sims){
+  # Step 1, propose new theta
+  while(theta.propose[i] <= 0 | theta.propose[i] >= 1){
+      theta.propose[i] <- theta.current[i-1] + rnorm(n = 1, mean = 0, sd = sigma.propose) 
+  }
+
+  # Step 2, compute p.move - note this is on a log scale
+  log.p.theta.propose <- sum(dbinom(y, 1, theta.propose[i], log = T)) +
+    dbeta(theta.propose[i], a.prior, b.prior, log = T)
+  log.p.theta.current <- sum(dbinom(y, 1, theta.current[i-1], log = T)) +
+    dbeta(theta.current[i-1], a.prior, b.prior, log = T)
+  log.p.move <- log.p.theta.propose - log.p.theta.current
+  
+  # Step 3, accept with probability proportional to p.move - still on log scale
+  if (log(runif(1)) < log.p.move){
+    theta.current[i] <- theta.propose[i]
+    theta.accept[i] <- 1
+  } else{
+    theta.current[i] <- theta.current[i-1]
+  }
+}
+par(mfcol=c(1,1))
+plot(theta.current[1:20], type = 'b', pch=18, ylim=c(0,1), ylab = expression(theta), 
+     main = 'First 20 proposals', xlab='step number')
+points(theta.propose[1:20], pch=1, col='red', cex=2)
+legend('topright', legend = c('propose','accept'),col=c('red','black'), lty =c(NA,1), pch = c(1,18))
+```
+
+Now after viewing the first twenty steps, consider all steps.
+
+```{r, fig.align='center', fig.width=5}
+plot(theta.current, type = 'l', ylim=c(0,1), ylab = expression(theta), 
+     main = 'Trace Plot', xlab='step number')
+```
+\newpage
+
+Now look at a histogram depiction of the distribution.
+```{r}
+par(mfrow=c(1,1))
+df <- data.frame(theta.current)
+hist.mcmc <- ggplot(df) + geom_histogram(aes(x=theta.current,y=..density..), bins = 250) + 
+  xlab(expression(theta)) + ylab(expression(paste('p(',theta,')',sep=''))) + 
+  ggtitle('MCMC Distribution') + xlim(0,1) + ylim(0,15)
+
+theta <- seq(0.01,0.99, by = .01)
+p.theta <- dbeta(theta, a.prior + z, b.prior + N -z)
+true.df <- data.frame(theta, p.theta)
+curve.true <- ggplot(true.df) + geom_polygon(aes(x=theta, y=p.theta)) + xlab(expression(theta)) + 
+  ylab(expression(paste('p(',theta,')',sep=''))) + ggtitle('True Distribution') + ylim(0,15)
+grid.arrange(hist.mcmc, curve.true, nrow=2)
+```
+
+In this case, we see that the distributions look very similar. In general with MCMC there are three goals:
+
+1. The values in the chain must be __representative__ of the posterior distribution. \vfill
+2. The chain should be of sufficient size so estimates are __accurate__ and __stable__.  \vfill
+3. The chain should be generated __efficiently__.
+\newpage
+
+#### 3. MCMC with JAGS
+JAGS is a software package for conducting MCMC. We will run this through R, but note you also need to download JAGS to your computer. You will not be able to reproduce this code or run other JAGS examples if JAGS has not been installed.
+
+There are a few common examples for running JAGS code, which will be illustrated below:
+
+1. Load the data and place it in a list object. The list will eventually be passed to JAGS.
+
+```{r}
+library(rjags)
+library(runjags)
+birds <- read.csv('http://www.math.montana.edu/ahoegh/teaching/stat491/data/willowtit2013.csv')
+y <- birds$birds
+N <- nrow(birds) # count number of trials
+z <- sum(birds$birds)
+dataList = list(y = y, Ntotal = N)
+```
+
+
+2. Specify the model as a text variable. While the code looks vaguely familiar, it to is executed in JAGS. The model statement contains the likelihood piece, $p(y|\theta)$, written as a loop through the $N$ Bernoulli observations and the prior, $p(\theta)$. Finally the model is bundled as a .txt object.
+```{r}
+modelString = "
+  model {
+    for ( i in 1:Ntotal ) {
+      y[i] ~ dbern( theta ) # likelihood
+    }
+    theta ~ dbeta( 1 , 1 ) # prior
+  }
+"
+writeLines( modelString, con='TEMPmodel.txt')
+```
+
+3. Initialize the chains by specifying a starting point. This is akin to stating which island the politician will start on. It is often advantageous to run a few chains with different starting points to verify that they have the same end results.
+
+```{r}
+initsList <- function(){
+  # function for initializing starting place of theta
+  # RETURNS: list with random start point for theta
+  return(list(theta = runif(1)))
+}
+```
+
+4. Generate MCMC chains. Now we call the JAGS code to run the MCMC. The `jags.model()` function takes:
+    - a file containing the model specification
+    - the data list
+    - the list containing the initialized starting points
+    - the function also permits running multiple chains, `n.chain`,
+    - `n.adapt` works to tune the algorithm.
+```{r}
+jagsModel <- jags.model( file = "TEMPmodel.txt", data = dataList, inits =initsList,
+                         n.chains =3, n.adapt = 500)
+update(jagsModel, n.iter = 500)
+```
+
+The `update` statement results in what is called the burn in period, which is essentially tuning the algorithm and those samples are ultimately discarded. Now we can run the algorithm for a little longer (let the politician walk around).
+
+```{r}
+codaSamples <- coda.samples( jagsModel, variable.names = c('theta'), n.iter =3334)
+```
+
+5. Examine the results. Finally we can look at our chains to evaluate the results.
+```{r, fig.align='center',fig.width==5.5,fig.height=8}
+HPDinterval(codaSamples)
+summary(codaSamples)
+```
+
+```{r, fig.align='center',fig.width=5.5,fig.height=6.5}
+par(mfcol=c(2,1))
+traceplot(codaSamples)
+densplot(codaSamples)
+```
+
+
+\newpage
+
+#### 4. MCMC with stan
+Stan is an alternative to JAGS for fitting MCMC. Stan implements a slightly different approach for proposing new locations, known as Hamiltonian Monte Carlo.
+
+We may look at Stan later in the class, but the programming is more involved than JAGS. Stan uses C++ as the base code. Additionally, the data and parameters are defined separately. Stan also permits vectorized operations, such as `y~bernoulli(theta)`.
+
+```{r, eval=T}
+library(rstan)
+
+# specify model
+
+modelString = "
+  data {
+    int<lower=0> N;
+    int y[N] ; // y is a length-N vector of integers
+  }
+  parameters {
+    real<lower=0,upper=1> theta ;
+  }
+  model {
+    theta ~ beta(1,1) ;
+    y ~ bernoulli(theta) ;
+  }
+"
+
+stanDSO <- stan_model(model_code = modelString)
+
+# reuse bird dataset
+birds <- read.csv('http://www.math.montana.edu/ahoegh/teaching/stat491/data/willowtit2013.csv')
+y <- birds$birds
+N <- nrow(birds) # count number of trials
+dataList <- list(y=y, N=N)
+
+# run code in stan
+stanFit <- sampling(object=stanDSO, data=dataList, chains=3,
+                    iter=10000, warmup =200, thin=1)
+
+#convert to coda object
+stanFit
+summary(stanFit)
+```
+
+
+#### 5. Wrap Up
+
+1. How do the results of the methods compare?
+\vfill
+
+2. Of the MCMC approaches, which do you find the most intuitive?
+\vfill
+
+3. Of the MCMC approaches, which do you find the easiest to implement?
+\vfill
+
+
